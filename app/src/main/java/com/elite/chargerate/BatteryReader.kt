@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
+import android.os.Build
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -19,6 +20,12 @@ data class Reading(
     val fullMah: Float,
     val pctPerHour: Float,  // NaN when unknown
     val etaHours: Float,    // NaN when unknown
+    val statusText: String = "Unknown",
+    val plugName: String = "On battery",
+    val healthText: String = "Unknown",
+    val tech: String = "—",
+    val cycles: Int = -1,   // -1 when the device does not report it
+    val soh: Int = -1,      // state of health percent, -1 when not reported
 ) {
     val watts: Double get() = mA / 1000.0 * mV / 1000.0
 }
@@ -39,6 +46,37 @@ class BatteryReader(private val ctx: Context) {
         val status = i.getIntExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_UNKNOWN)
         val plugged = i.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) != 0
         val charging = status == BatteryManager.BATTERY_STATUS_CHARGING
+
+        val statusText = when (status) {
+            BatteryManager.BATTERY_STATUS_CHARGING -> "Charging"
+            BatteryManager.BATTERY_STATUS_DISCHARGING -> "Discharging"
+            BatteryManager.BATTERY_STATUS_NOT_CHARGING -> "Not charging"
+            BatteryManager.BATTERY_STATUS_FULL -> "Full"
+            else -> "Unknown"
+        }
+        val plugName = when (i.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)) {
+            BatteryManager.BATTERY_PLUGGED_AC -> "AC charger"
+            BatteryManager.BATTERY_PLUGGED_USB -> "USB"
+            BatteryManager.BATTERY_PLUGGED_WIRELESS -> "Wireless"
+            0 -> "On battery"
+            else -> "Plugged in"
+        }
+        val healthText = when (i.getIntExtra(BatteryManager.EXTRA_HEALTH, BatteryManager.BATTERY_HEALTH_UNKNOWN)) {
+            BatteryManager.BATTERY_HEALTH_GOOD -> "Good"
+            BatteryManager.BATTERY_HEALTH_OVERHEAT -> "Overheat"
+            BatteryManager.BATTERY_HEALTH_DEAD -> "Dead"
+            BatteryManager.BATTERY_HEALTH_OVER_VOLTAGE -> "Over voltage"
+            BatteryManager.BATTERY_HEALTH_UNSPECIFIED_FAILURE -> "Failure"
+            BatteryManager.BATTERY_HEALTH_COLD -> "Cold"
+            else -> "Unknown"
+        }
+        val tech = i.getStringExtra(BatteryManager.EXTRA_TECHNOLOGY)?.takeIf { it.isNotBlank() } ?: "—"
+        val cycles = if (Build.VERSION.SDK_INT >= 34) i.getIntExtra(BatteryManager.EXTRA_CYCLE_COUNT, -1) else -1
+        // BATTERY_PROPERTY_STATE_OF_HEALTH (API 34) has the property id 10. Unsupported devices
+        // return Integer.MIN_VALUE, which the range check below turns into "unknown".
+        val soh = if (Build.VERSION.SDK_INT >= 34)
+            bm.getIntProperty(10).takeIf { it in 1..100 } ?: -1
+        else -1
 
         // CURRENT_NOW is microamps on Pixels; a few devices report milliamps.
         val rawProp = bm.getLongProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)
@@ -77,6 +115,12 @@ class BatteryReader(private val ctx: Context) {
             fullMah = fullMah,
             pctPerHour = pph,
             etaHours = eta,
+            statusText = statusText,
+            plugName = plugName,
+            healthText = healthText,
+            tech = tech,
+            cycles = cycles,
+            soh = soh,
         )
     }
 }
