@@ -45,6 +45,7 @@ class MonitorService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        CrashLog.install(this)
         reader = BatteryReader(this)
         nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(

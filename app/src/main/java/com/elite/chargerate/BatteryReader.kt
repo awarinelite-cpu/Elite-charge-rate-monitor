@@ -71,12 +71,18 @@ class BatteryReader(private val ctx: Context) {
             else -> "Unknown"
         }
         val tech = i.getStringExtra(BatteryManager.EXTRA_TECHNOLOGY)?.takeIf { it.isNotBlank() } ?: "—"
-        val cycles = if (Build.VERSION.SDK_INT >= 34) i.getIntExtra(BatteryManager.EXTRA_CYCLE_COUNT, -1) else -1
+        val cycles = try {
+            if (Build.VERSION.SDK_INT >= 34) i.getIntExtra(BatteryManager.EXTRA_CYCLE_COUNT, -1) else -1
+        } catch (_: Throwable) {
+            -1
+        }
         // BATTERY_PROPERTY_STATE_OF_HEALTH (API 34) has the property id 10. Unsupported devices
         // return Integer.MIN_VALUE, which the range check below turns into "unknown".
-        val soh = if (Build.VERSION.SDK_INT >= 34)
-            bm.getIntProperty(10).takeIf { it in 1..100 } ?: -1
-        else -1
+        val soh = try {
+            if (Build.VERSION.SDK_INT >= 34) bm.getIntProperty(10).takeIf { it in 1..100 } ?: -1 else -1
+        } catch (_: Throwable) {
+            -1
+        }
 
         // CURRENT_NOW is microamps on Pixels; a few devices report milliamps.
         val rawProp = bm.getLongProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)

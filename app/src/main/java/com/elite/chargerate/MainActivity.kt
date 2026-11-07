@@ -101,7 +101,12 @@ class MainActivity : Activity() {
 
     private val tick = object : Runnable {
         override fun run() {
-            refresh()
+            try {
+                refresh()
+            } catch (t: Throwable) {
+                showError("The dashboard failed to update", android.util.Log.getStackTraceString(t))
+                return
+            }
             handler.postDelayed(this, 1000)
         }
     }
@@ -110,14 +115,25 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        reader = BatteryReader(this)
-        window.statusBarColor = navy
-        window.navigationBarColor = bgPage
-        if (Build.VERSION.SDK_INT >= 26) {
-            window.decorView.systemUiVisibility =
-                window.decorView.systemUiVisibility or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        CrashLog.install(this)
+        val lastCrash = CrashLog.read(this)
+        if (lastCrash != null) {
+            showError("The app crashed last time", lastCrash)
+            return
         }
-        buildRoot()
+        try {
+            reader = BatteryReader(this)
+            window.statusBarColor = navy
+            window.navigationBarColor = bgPage
+            if (Build.VERSION.SDK_INT >= 26) {
+                window.decorView.systemUiVisibility =
+                    window.decorView.systemUiVisibility or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+            }
+            buildRoot()
+        } catch (t: Throwable) {
+            showError("The dashboard failed to start", android.util.Log.getStackTraceString(t))
+            return
+        }
 
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -129,6 +145,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        if (!::content.isInitialized) return
         ticks = 0
         handler.post(tick)
         updateMonitorButton()
@@ -137,6 +154,55 @@ class MainActivity : Activity() {
     override fun onPause() {
         handler.removeCallbacks(tick)
         super.onPause()
+    }
+
+    /** Shows an error and its stack trace on screen so it can be read and shared. */
+    private fun showError(title: String, trace: String) {
+        handler.removeCallbacks(tick)
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(40), dp(20), dp(24))
+        }
+        col.addView(TextView(this).apply {
+            text = title
+            textSize = 20f
+            setTextColor(Color.WHITE)
+            typeface = Typeface.DEFAULT_BOLD
+        })
+        col.addView(TextView(this).apply {
+            text = "Screenshot this screen and send it to get it fixed."
+            textSize = 13f
+            setTextColor(Color.parseColor("#CBD5E1"))
+            setPadding(0, dp(6), 0, dp(12))
+        })
+        col.addView(TextView(this).apply {
+            text = trace.take(3500)
+            textSize = 10.5f
+            typeface = Typeface.MONOSPACE
+            setTextColor(Color.parseColor("#FCA5A5"))
+            setTextIsSelectable(true)
+        })
+        col.addView(TextView(this).apply {
+            text = "Clear and try again"
+            textSize = 14f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#1D5BFF"))
+                cornerRadius = 24f * resources.displayMetrics.density
+            }
+            setOnClickListener {
+                CrashLog.clear(this@MainActivity)
+                recreate()
+            }
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            topMargin = dp(20)
+        })
+        setContentView(ScrollView(this).apply {
+            setBackgroundColor(Color.parseColor("#0F172A"))
+            addView(col)
+        })
     }
 
     // ---------------------------------------------------------------- helpers
