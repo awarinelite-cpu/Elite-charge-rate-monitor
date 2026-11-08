@@ -863,7 +863,7 @@ class MainActivity : Activity() {
         pphTitle.text = if (r.pctPerHour.isNaN()) "— per hour" else
             String.format(Locale.US, if (r.pctPerHour >= 10f) "%.0f%% per hour" else "%.1f%% per hour", r.pctPerHour)
         pphSub.text = r.statusText
-        pphWatts.text = String.format(Locale.US, "%.1f W", abs(r.watts))
+        pphWatts.text = String.format(Locale.US, "%.1f W", abs(r.avgWatts))
         etaTitle.text = Fmt.duration(r.etaHours)
         etaSub.text = if (r.etaHours.isNaN() || r.etaHours.isInfinite() || r.etaHours > 99f || r.etaHours < 0f) "—" else {
             val at = SimpleDateFormat("h:mm a", Locale.getDefault())
