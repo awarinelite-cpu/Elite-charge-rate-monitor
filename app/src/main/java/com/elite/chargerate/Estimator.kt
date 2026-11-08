@@ -3,6 +3,7 @@ package com.elite.chargerate
 import android.content.Context
 import kotlin.math.abs
 import kotlin.math.exp
+import kotlin.math.floor
 
 /**
  * Process-wide signal processing for the battery readings. The activity and the background
@@ -80,9 +81,18 @@ object Estimator {
         var learned = p.getFloat("fullMah", 0f)
 
         if (counterMah > 0f && percent in 0..100) {
-            val crossed = lastPercent >= 0 && percent != lastPercent
+            val prevPercent = lastPercent
+            val crossed = prevPercent >= 0 && percent != prevPercent
             lastPercent = percent
             if (crossed) {
+                if (learned > 0f && abs(percent - prevPercent) == 1) {
+                    // Where does Android's percent tick over: at x.5 (rounds) or at x.0 (floors)?
+                    val down = percent < prevPercent
+                    val observed = counterMah / learned * 100f - percent - (if (down) 1f else 0f)
+                    val old = p.getFloat("boundary", Float.NaN)
+                    val b = observed.coerceIn(-1f, 0.5f)
+                    p.edit().putFloat("boundary", if (old.isNaN()) b else old * 0.8f + b * 0.2f).apply()
+                }
                 if (anchorPercent < 0) {
                     anchorCounter = counterMah; anchorPercent = percent
                 } else {
@@ -104,5 +114,148 @@ object Estimator {
         }
         if (learned > 0f) return learned
         return if (percent > 1 && counterMah > 0f) counterMah / (percent / 100f) else 0f
+    }
+
+    // ------------------------------------------------------------------ fractional percent
+
+    /**
+     * Percent with decimals, from the charge counter and the learned capacity. It is kept inside
+     * the band Android's own whole-number percent allows, so it can refine the reading but never
+     * contradict it. Null until the capacity has been learned.
+     */
+    fun exactPercent(ctx: Context, counterMah: Float, fullMah: Float, level: Int): Float? {
+        val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (p.getFloat("fullMah", 0f) <= 0f || counterMah <= 0f || fullMah <= 0f || level !in 0..100) return null
+        val b = p.getFloat("boundary", -0.5f)
+        val v = counterMah / fullMah * 100f
+        return v.coerceIn(level + b, level + b + 0.99f).coerceIn(0f, 100f)
+    }
+
+    // ------------------------------------------------------------ current self-calibration
+
+    private var calStartMs = 0L
+    private var calLastMs = 0L
+    private var calCounter = 0f
+    private var calIntegral = 0.0
+    private var calPositive = true
+
+    fun scale(ctx: Context): Double =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getFloat("scale", 1f).toDouble()
+
+    /**
+     * Compares the charge the current reading says flowed (integrated over a few minutes) with
+     * what the battery's own charge counter says changed, and nudges a correction factor.
+     * [signedMa] is the unscaled current.
+     */
+    fun calibrate(ctx: Context, signedMa: Double, counterMah: Float, nowMs: Long, positive: Boolean) {
+        if (counterMah <= 0f) {
+            calStartMs = 0L
+            return
+        }
+        val gap = if (calLastMs == 0L) 0.0 else (nowMs - calLastMs) / 1000.0
+        calLastMs = nowMs
+        if (calStartMs == 0L || gap > 15.0 || calPositive != positive) {
+            calStartMs = nowMs; calCounter = counterMah; calIntegral = 0.0; calPositive = positive
+            return
+        }
+        calIntegral += signedMa * gap / 3600.0
+        if ((nowMs - calStartMs) / 1000.0 >= 240.0) {
+            val dc = (counterMah - calCounter).toDouble()
+            if (abs(dc) >= 4.0 && abs(calIntegral) >= 4.0 && dc * calIntegral > 0.0) {
+                val ratio = dc / calIntegral
+                if (ratio in 0.7..1.4) {
+                    val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    val old = p.getFloat("scale", 1f)
+                    p.edit().putFloat("scale", (old * 0.7 + ratio * 0.3).coerceIn(0.8, 1.25).toFloat()).apply()
+                }
+            }
+            calStartMs = nowMs; calCounter = counterMah; calIntegral = 0.0
+        }
+    }
+
+    // ------------------------------------------------------------------- charging taper
+
+    private var cPct = -1
+    private var cSumMa = 0.0
+    private var cSumS = 0.0
+    private var cValid = false
+    private var cLastMs = 0L
+    private var refCurrent: Double? = null
+    private var ratios: DoubleArray? = null
+
+    private fun loadRatios(ctx: Context): DoubleArray {
+        ratios?.let { return it }
+        val arr = DoubleArray(100)
+        val saved = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("ratios", null)
+        saved?.split(",")?.forEachIndexed { i, v -> if (i < 100) arr[i] = v.toDoubleOrNull() ?: 0.0 }
+        ratios = arr
+        return arr
+    }
+
+    /** How much slower charging gets near full, as a multiplier on the time for one percent. */
+    private fun defaultMultiplier(p: Int): Double = when {
+        p < 80 -> 1.0
+        p < 90 -> 1.0 + (p - 80) * 0.2
+        else -> 2.8 + (p - 90) * 0.45
+    }
+
+    private fun ratioAt(ctx: Context, p: Int): Double {
+        val learned = loadRatios(ctx)[p.coerceIn(0, 99)]
+        return if (learned > 0.0) learned else 1.0 / defaultMultiplier(p)
+    }
+
+    /**
+     * Watches each full percent step while charging. Steps between 30% and 70% give a reference
+     * current; steps above 75% are compared to it to learn how this charger tapers off.
+     */
+    fun trackCharge(ctx: Context, percent: Int, fastMa: Double, charging: Boolean, nowMs: Long) {
+        if (!charging) {
+            cPct = -1; cValid = false; refCurrent = null; cLastMs = 0L
+            return
+        }
+        val dt = if (cLastMs == 0L) 0.0 else ((nowMs - cLastMs) / 1000.0).coerceIn(0.0, 30.0)
+        cLastMs = nowMs
+        if (cPct < 0) {
+            cPct = percent; cValid = false; cSumMa = 0.0; cSumS = 0.0
+            return
+        }
+        if (percent == cPct) {
+            cSumMa += abs(fastMa) * dt
+            cSumS += dt
+            return
+        }
+        if (percent == cPct + 1 && cValid && cSumS >= 20.0) {
+            val avg = cSumMa / cSumS
+            val step = cPct
+            val ref = refCurrent
+            if (step in 30..70) {
+                refCurrent = if (ref == null) avg else ref * 0.5 + avg * 0.5
+            } else if (step >= 75 && ref != null && ref > 50.0) {
+                val r = (avg / ref).coerceIn(0.05, 1.2)
+                val arr = loadRatios(ctx)
+                arr[step] = if (arr[step] > 0.0) arr[step] * 0.5 + r * 0.5 else r
+                ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                    .putString("ratios", arr.joinToString(",") { "%.4f".format(java.util.Locale.US, it) })
+                    .apply()
+            }
+        }
+        cValid = abs(percent - cPct) == 1
+        cPct = percent
+        cSumMa = 0.0
+        cSumS = 0.0
+    }
+
+    /** Hours to 100%, stepping percent by percent with the expected taper. NaN if unknown. */
+    fun chargeEtaHours(ctx: Context, exactPercent: Float, fullMah: Float, avgMa: Double): Float {
+        if (fullMah <= 0f || avgMa < 20.0) return Float.NaN
+        val start = floor(exactPercent).toInt().coerceIn(0, 99)
+        val now = ratioAt(ctx, start)
+        var hours = 0.0
+        for (p in start..99) {
+            val frac = if (p == start) (start + 1 - exactPercent).coerceIn(0f, 1f).toDouble() else 1.0
+            val current = avgMa * ratioAt(ctx, p) / now
+            hours += frac * (fullMah / 100.0) / current
+        }
+        return hours.toFloat()
     }
 }

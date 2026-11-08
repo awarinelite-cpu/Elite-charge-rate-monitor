@@ -846,7 +846,10 @@ class MainActivity : Activity() {
         Lifetime.update(this, r.mA)
 
         // Hero
-        val pct = SpannableStringBuilder(String.format(Locale.US, "%.0f%%", r.percent))
+        val pct = SpannableStringBuilder(
+            if (r.exactKnown) String.format(Locale.US, "%.2f%%", r.percentExact)
+            else String.format(Locale.US, "%.0f%%", r.percent)
+        )
         pct.setSpan(ForegroundColorSpan(c("#4ADE80")), pct.length - 1, pct.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         pctText.text = pct
         statusPillText.text = r.statusText

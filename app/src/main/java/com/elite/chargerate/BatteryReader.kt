@@ -21,6 +21,8 @@ data class Reading(
     val pctPerHour: Float,  // NaN when unknown
     val etaHours: Float,    // NaN when unknown
     val avgMa: Int = 0,     // signed, ~90 s average used for the estimates
+    val percentExact: Float = 0f,   // percent with decimals when known, else the whole number
+    val exactKnown: Boolean = false,
     val statusText: String = "Unknown",
     val plugName: String = "On battery",
     val healthText: String = "Unknown",
@@ -88,25 +90,32 @@ class BatteryReader(private val ctx: Context) {
         // CURRENT_NOW is microamps on Pixels; a few devices report milliamps.
         val rawProp = bm.getLongProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)
         if (rawProp == Long.MIN_VALUE) return null
-        val magnitudeMa = Estimator.toMilliamps(ctx, rawProp)
+        val unscaledMa = Estimator.toMilliamps(ctx, rawProp)
 
         // Sign differs between vendors, so derive it from the charging state instead.
         val positive = charging || status == BatteryManager.BATTERY_STATUS_FULL
-        val signed = if (positive) magnitudeMa else -magnitudeMa
-
         val now = System.currentTimeMillis()
-        val sm = Estimator.smooth(ctx, signed, positive, now)
 
         val counterUah = bm.getLongProperty(BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER)
         val realCounterMah = if (counterUah > 0) counterUah / 1000f else 0f
+
+        // Self-calibrate the current against the battery's charge counter, then apply the factor.
+        Estimator.calibrate(ctx, if (positive) unscaledMa else -unscaledMa, realCounterMah, now, positive)
+        val magnitudeMa = unscaledMa * Estimator.scale(ctx)
+        val signed = if (positive) magnitudeMa else -magnitudeMa
+        val sm = Estimator.smooth(ctx, signed, positive, now)
+        Estimator.trackCharge(ctx, level, sm.fast, charging, now)
+
         val fullMah = Estimator.fullCapacity(ctx, realCounterMah, level)
         val counterMah = if (realCounterMah > 0f) realCounterMah else fullMah * percent / 100f
+        val exact = Estimator.exactPercent(ctx, realCounterMah, fullMah, level)
 
         val absAvg = abs(sm.slow).toFloat()
         val pph = if (fullMah > 0f) absAvg / fullMah * 100f else Float.NaN
         val eta = when {
             fullMah <= 0f || absAvg < 5f -> Float.NaN
-            sm.slow > 0 -> (fullMah - counterMah).coerceAtLeast(0f) / absAvg
+            charging -> Estimator.chargeEtaHours(ctx, exact ?: percent, fullMah, sm.slow)
+            sm.slow > 0 -> Float.NaN
             else -> counterMah / absAvg
         }
 
@@ -123,6 +132,8 @@ class BatteryReader(private val ctx: Context) {
             pctPerHour = pph,
             etaHours = eta,
             avgMa = sm.slow.roundToInt(),
+            percentExact = exact ?: percent,
+            exactKnown = exact != null,
             statusText = statusText,
             plugName = plugName,
             healthText = healthText,
