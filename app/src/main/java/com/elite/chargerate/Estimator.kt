@@ -85,14 +85,6 @@ object Estimator {
             val crossed = prevPercent >= 0 && percent != prevPercent
             lastPercent = percent
             if (crossed) {
-                if (learned > 0f && abs(percent - prevPercent) == 1) {
-                    // Where does Android's percent tick over: at x.5 (rounds) or at x.0 (floors)?
-                    val down = percent < prevPercent
-                    val observed = counterMah / learned * 100f - percent - (if (down) 1f else 0f)
-                    val old = p.getFloat("boundary", Float.NaN)
-                    val b = observed.coerceIn(-1f, 0.5f)
-                    p.edit().putFloat("boundary", if (old.isNaN()) b else old * 0.8f + b * 0.2f).apply()
-                }
                 if (anchorPercent < 0) {
                     anchorCounter = counterMah; anchorPercent = percent
                 } else {
@@ -119,16 +111,16 @@ object Estimator {
     // ------------------------------------------------------------------ fractional percent
 
     /**
-     * Percent with decimals, from the charge counter and the learned capacity. It is kept inside
-     * the band Android's own whole-number percent allows, so it can refine the reading but never
-     * contradict it. Null until the capacity has been learned.
+     * Percent with decimals, from the charge counter and the learned capacity. The whole part is
+     * always forced to match the percent Android shows, so the two can never disagree; only the
+     * decimals come from the counter. Null until the capacity has been learned.
      */
     fun exactPercent(ctx: Context, counterMah: Float, fullMah: Float, level: Int): Float? {
         val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         if (p.getFloat("fullMah", 0f) <= 0f || counterMah <= 0f || fullMah <= 0f || level !in 0..100) return null
-        val b = p.getFloat("boundary", -0.5f)
         val v = counterMah / fullMah * 100f
-        return v.coerceIn(level + b, level + b + 0.99f).coerceIn(0f, 100f)
+        // Keep the whole part identical to the percent the phone shows (level .. level + 0.99).
+        return v.coerceIn(level.toFloat(), level + 0.99f).coerceIn(0f, 100f)
     }
 
     // ------------------------------------------------------------ current self-calibration
