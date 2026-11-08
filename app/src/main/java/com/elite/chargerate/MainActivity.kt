@@ -57,7 +57,7 @@ class MainActivity : Activity() {
         BAD("#FEE2E2", "#B91C1C"),
     }
 
-    private class Tile(val value: TextView, val pill: TextView)
+    private class Tile(val value: TextView, val pill: TextView, val card: View)
 
     // Dashboard views
     private lateinit var pctText: TextView
@@ -457,6 +457,7 @@ class MainActivity : Activity() {
             "How hard the battery is pushing right now. Healthy Li-ion cells sit between about 3.3 V and 4.4 V.")
         tTemp = tileIn(row1, "Temperature", R.drawable.ic_thermo, "#EF4444", "#FDE0E0",
             "Battery temperature. Below 35 °C is normal; above 40 °C means the phone is working hard or sitting in heat.")
+        tTemp.card.setOnClickListener { showCoolDown() }
         tLevel = tileIn(row1, "Level", R.drawable.ic_levelbars, "#16A34A", "#D5F5DF",
             "How much charge is left.")
 
@@ -677,7 +678,7 @@ class MainActivity : Activity() {
         }
         val first = row.childCount == 0
         row.addView(card, lp(0, match, 1f, if (first) 0 else 5, 0, if (row.childCount == 2) 0 else 5, 0))
-        return Tile(value, pill)
+        return Tile(value, pill, card)
     }
 
     private fun buildDevice(): View {
@@ -968,6 +969,83 @@ class MainActivity : Activity() {
         sb.setSpan(ForegroundColorSpan(Color.WHITE), start, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         sb.setSpan(StyleSpan(Typeface.BOLD), start, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
         return sb
+    }
+
+    // --------------------------------------------------------------- cool down
+
+    private fun showCoolDown() {
+        val temp = reader.read()?.tempC
+        val verdict = when {
+            temp == null -> "Temperature unavailable"
+            temp < 35f -> "%.1f °C, normal".format(Locale.US, temp)
+            temp < 40f -> "%.1f °C, warm".format(Locale.US, temp)
+            else -> "%.1f °C, hot".format(Locale.US, temp)
+        }
+        val ink = Color.parseColor("#0F1B3D")
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(18), dp(20), dp(6))
+        }
+        col.addView(label("Cool down", 20f, ink, 2))
+        col.addView(label(verdict, 14f, textMuted, 1), lp(wrap, wrap, 0f, 0, 4, 0, 10))
+        col.addView(
+            label(
+                "Android does not let any app force-close other apps, so this cannot switch off " +
+                    "whatever is heating the phone. It can ask Android to end other apps' background " +
+                    "processes, and it shows which apps you have used most so you can stop them yourself.",
+                12.5f, textMuted
+            ),
+            lp(wrap, wrap, 0f, 0, 0, 0, 14)
+        )
+        col.addView(button("Close background apps", true) {
+            val n = CoolDown.closeBackgroundApps(this)
+            Toast.makeText(this, "Asked Android to close background apps ($n checked)", Toast.LENGTH_LONG).show()
+        }, lp(match, wrap))
+
+        col.addView(label("Most used in the last 3 hours", 14f, ink, 2), lp(wrap, wrap, 0f, 0, 18, 0, 6))
+        if (!CoolDown.hasUsageAccess(this)) {
+            col.addView(
+                label("Allow usage access to see which apps you have been using.", 12.5f, textMuted),
+                lp(wrap, wrap, 0f, 0, 0, 0, 8)
+            )
+            col.addView(button("Allow usage access", false) {
+                startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+            }, lp(match, wrap))
+        } else {
+            val apps = CoolDown.mostUsedApps(this)
+            if (apps.isEmpty()) {
+                col.addView(label("No heavy use found.", 12.5f, textMuted))
+            } else {
+                col.addView(
+                    label("Tap an app, then Force stop.", 12.5f, textMuted),
+                    lp(wrap, wrap, 0f, 0, 0, 0, 6)
+                )
+                for (a in apps) {
+                    col.addView(LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                        background = shape(c("#F1F5F9"), 14f)
+                        setPadding(dp(14), dp(11), dp(14), dp(11))
+                        addView(label(a.label, 14f, ink, 1), lp(0, wrap, 1f))
+                        addView(label("${a.minutes} min", 12.5f, textMuted))
+                        setOnClickListener {
+                            startActivity(
+                                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${a.packageName}"))
+                            )
+                        }
+                    }, lp(match, wrap, 0f, 0, 0, 0, 6))
+                }
+            }
+        }
+        col.addView(
+            label("Also try: unplug the charger, remove the case, lower the brightness.", 12f, textMuted),
+            lp(wrap, wrap, 0f, 0, 14, 0, 6)
+        )
+
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Light_Dialog_Alert)
+            .setView(ScrollView(this).apply { addView(col) })
+            .setPositiveButton("Done", null)
+            .show()
     }
 
     // ----------------------------------------------------------------- monitor
