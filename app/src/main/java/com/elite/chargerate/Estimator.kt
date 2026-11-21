@@ -110,17 +110,69 @@ object Estimator {
 
     // ------------------------------------------------------------------ fractional percent
 
+    private var exLevel = -1
+    private var exCharging = true
+    private var exBase = 0f
+    private var exAnchorCounter = 0f
+    private var exAnchorTick = false
+    private var exIntegralMah = 0.0
+    private var exLastMs = 0L
+    private var exLastCounter = 0f
+    private var exLastCounterChangeMs = 0L
+    private var exLast = -1f
+
+    private fun exAnchor(level: Int, base: Float, counter: Float, tick: Boolean) {
+        exLevel = level; exBase = base; exAnchorCounter = counter; exAnchorTick = tick
+        exIntegralMah = 0.0; exLast = -1f
+    }
+
     /**
-     * Percent with decimals, from the charge counter and the learned capacity. The whole part is
-     * always forced to match the percent Android shows, so the two can never disagree; only the
-     * decimals come from the counter. Null until the capacity has been learned.
+     * Percent with decimals. Anchored to the moment Android's whole percent ticks over (that
+     * moment is exact), then advanced by how much charge has flowed since, using the battery's
+     * charge counter, or the integrated current when the counter is stale. mAh per percent is
+     * learned from consecutive ticks. Never clamped to a stale capacity estimate, so it keeps
+     * moving, and the whole part always equals the percent the phone shows.
      */
-    fun exactPercent(ctx: Context, counterMah: Float, fullMah: Float, level: Int): Float? {
+    fun exactPercent(ctx: Context, counterMah: Float, fullMah: Float, level: Int,
+                     charging: Boolean, avgMa: Double, nowMs: Long): Float? {
+        if (level !in 0..100) return null
         val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        if (p.getFloat("fullMah", 0f) <= 0f || counterMah <= 0f || fullMah <= 0f || level !in 0..100) return null
-        val v = counterMah / fullMah * 100f
-        // Keep the whole part identical to the percent the phone shows (level .. level + 0.99).
-        return v.coerceIn(level.toFloat(), level + 0.99f).coerceIn(0f, 100f)
+        val capSlope = if (fullMah > 0f) fullMah / 100f else 0f
+        var slope = p.getFloat("mahPerPct", 0f)
+        if (slope <= 0f) slope = capSlope
+        if (slope <= 0f) return null
+        val haveCounter = counterMah > 0f
+
+        val dt = if (exLastMs == 0L) 0.0 else ((nowMs - exLastMs) / 1000.0).coerceIn(0.0, 30.0)
+        exLastMs = nowMs
+        exIntegralMah += avgMa * dt / 3600.0
+        if (haveCounter && counterMah != exLastCounter) {
+            exLastCounter = counterMah; exLastCounterChangeMs = nowMs
+        }
+
+        if (exLevel < 0 || charging != exCharging) {
+            val raw = if (haveCounter && capSlope > 0f) counterMah / capSlope - level else 0.5f
+            exAnchor(level, if (raw in 0.05f..0.95f) raw else 0.5f, counterMah, false)
+        } else if (level != exLevel) {
+            if (haveCounter && exAnchorTick && abs(level - exLevel) == 1 && capSlope > 0f) {
+                val d = abs(counterMah - exAnchorCounter)
+                if (d in capSlope * 0.5f..capSlope * 1.6f) {
+                    val old = p.getFloat("mahPerPct", 0f)
+                    val ns = if (old > 0f) old * 0.7f + d * 0.3f else d
+                    p.edit().putFloat("mahPerPct", ns).apply()
+                    slope = ns
+                }
+            }
+            exAnchor(level, if (charging) 0f else 0.99f, counterMah, true)
+        }
+        exCharging = charging
+
+        val fresh = haveCounter && nowMs - exLastCounterChangeMs < 30_000
+        val deltaMah = if (fresh) (counterMah - exAnchorCounter).toDouble() else exIntegralMah
+        var frac = (exBase + (deltaMah / slope).toFloat()).coerceIn(0f, 0.99f)
+        if (exLast >= 0f) frac = if (charging) maxOf(frac, exLast) else minOf(frac, exLast)
+        exLast = frac
+        return (level + frac).coerceIn(0f, 100f)
     }
 
     // ------------------------------------------------------------ current self-calibration

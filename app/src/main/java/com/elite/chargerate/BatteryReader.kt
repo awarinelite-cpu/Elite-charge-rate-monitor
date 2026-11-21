@@ -108,7 +108,7 @@ class BatteryReader(private val ctx: Context) {
 
         val fullMah = Estimator.fullCapacity(ctx, realCounterMah, level)
         val counterMah = if (realCounterMah > 0f) realCounterMah else fullMah * percent / 100f
-        val exact = Estimator.exactPercent(ctx, realCounterMah, fullMah, level)
+        val exact = Estimator.exactPercent(ctx, realCounterMah, fullMah, level, charging, sm.slow, now)
 
         val absAvg = abs(sm.slow).toFloat()
         val pph = if (fullMah > 0f) absAvg / fullMah * 100f else Float.NaN
