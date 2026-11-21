@@ -111,6 +111,24 @@ class MainActivity : Activity() {
         }
     }
 
+    private var lastReading: Reading? = null
+    private val liveTick = object : Runnable {
+        override fun run() {
+            val r = lastReading
+            if (r != null && r.exactKnown && pages[0] != null) {
+                val v = Estimator.liveExact(System.currentTimeMillis())
+                if (v != null) setPct(String.format(Locale.US, "%.2f%%", v))
+            }
+            handler.postDelayed(this, 100)
+        }
+    }
+
+    private fun setPct(text: String) {
+        val pct = SpannableStringBuilder(text)
+        pct.setSpan(ForegroundColorSpan(c("#4ADE80")), pct.length - 1, pct.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        pctText.text = pct
+    }
+
     private val prefs get() = getSharedPreferences(MonitorService.PREFS, MODE_PRIVATE)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -148,11 +166,13 @@ class MainActivity : Activity() {
         if (!::content.isInitialized) return
         ticks = 0
         handler.post(tick)
+        handler.post(liveTick)
         updateMonitorButton()
     }
 
     override fun onPause() {
         handler.removeCallbacks(tick)
+        handler.removeCallbacks(liveTick)
         super.onPause()
     }
 
@@ -847,12 +867,11 @@ class MainActivity : Activity() {
         Lifetime.update(this, r.mA)
 
         // Hero
-        val pct = SpannableStringBuilder(
+        lastReading = r
+        setPct(
             if (r.exactKnown) String.format(Locale.US, "%.2f%%", r.percentExact)
             else String.format(Locale.US, "%.0f%%", r.percent)
         )
-        pct.setSpan(ForegroundColorSpan(c("#4ADE80")), pct.length - 1, pct.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-        pctText.text = pct
         statusPillText.text = r.statusText
         gauge.setValue(r.mA)
         usePill.text = useLabel(r)

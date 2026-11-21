@@ -121,6 +121,21 @@ object Estimator {
     private var exLastCounterChangeMs = 0L
     private var exLast = -1f
 
+    // Smoothed, continuously advancing display value
+    private var dispValue = -1f
+    private var dispMs = 0L
+    private var dispRate = 0f      // percent per second, signed
+    private var dispLevel = -1
+    private var dispCharging = true
+
+    /** Value to show right now: last smoothed value advanced at the current charge rate. */
+    fun liveExact(nowMs: Long): Float? {
+        if (dispValue < 0f || dispLevel < 0) return null
+        val dtS = ((nowMs - dispMs) / 1000f).coerceIn(0f, 5f)
+        val v = dispValue + dispRate * dtS
+        return v.coerceIn(dispLevel.toFloat(), dispLevel + 0.99f)
+    }
+
     private fun exAnchor(level: Int, base: Float, counter: Float, tick: Boolean) {
         exLevel = level; exBase = base; exAnchorCounter = counter; exAnchorTick = tick
         exIntegralMah = 0.0; exLast = -1f
@@ -172,7 +187,19 @@ object Estimator {
         var frac = (exBase + (deltaMah / slope).toFloat()).coerceIn(0f, 0.99f)
         if (exLast >= 0f) frac = if (charging) maxOf(frac, exLast) else minOf(frac, exLast)
         exLast = frac
-        return (level + frac).coerceIn(0f, 100f)
+        val target = (level + frac).coerceIn(0f, 100f)
+
+        // Smooth: advance at the measured rate, ease toward the counter-based target.
+        val rate = (avgMa / (slope * 3600.0)).toFloat()
+        val cur = liveExact(nowMs)
+        var d = if (cur == null || dispLevel != level && abs(dispLevel - level) > 1 || dispCharging != charging) target
+                else cur
+        val err = target - d
+        d += err * (1f - kotlin.math.exp(-dt.toFloat() / 15f))
+        d = d.coerceIn(level.toFloat(), level + 0.99f)
+        if (charging && cur != null && dispLevel == level) d = maxOf(d, cur)
+        dispValue = d; dispMs = nowMs; dispRate = rate; dispLevel = level; dispCharging = charging
+        return d.coerceIn(0f, 100f)
     }
 
     // ------------------------------------------------------------ current self-calibration
